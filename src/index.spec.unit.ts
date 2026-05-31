@@ -1,4 +1,4 @@
-import { normalizeAuthMethod } from './index';
+import { normalizeAuthMethod } from './config';
 import { AuthenticationMethod } from './shared/auth/auth-factory';
 
 describe('index', () => {
