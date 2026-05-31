@@ -5,74 +5,18 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { WebApi } from 'azure-devops-node-api';
 import { GitVersionType } from 'azure-devops-node-api/interfaces/GitInterfaces';
 import { VERSION } from './shared/config';
 import { AzureDevOpsConfig } from './shared/types';
 import {
-  AzureDevOpsAuthenticationError,
   AzureDevOpsError,
   AzureDevOpsResourceNotFoundError,
   AzureDevOpsValidationError,
 } from './shared/errors';
-import { handleResponseError } from './shared/errors/handle-request-error';
-import { AuthenticationMethod, AzureDevOpsClient } from './shared/auth';
-// Import environment defaults when needed in feature handlers
-
-// Import feature modules with request handlers and tool definitions
-import {
-  workItemsTools,
-  isWorkItemsRequest,
-  handleWorkItemsRequest,
-} from './features/work-items';
-
-import {
-  projectsTools,
-  isProjectsRequest,
-  handleProjectsRequest,
-} from './features/projects';
-
-import {
-  repositoriesTools,
-  isRepositoriesRequest,
-  handleRepositoriesRequest,
-} from './features/repositories';
-
-import {
-  organizationsTools,
-  isOrganizationsRequest,
-  handleOrganizationsRequest,
-} from './features/organizations';
-
-import {
-  searchTools,
-  isSearchRequest,
-  handleSearchRequest,
-} from './features/search';
-
-import {
-  usersTools,
-  isUsersRequest,
-  handleUsersRequest,
-} from './features/users';
-
-import {
-  pullRequestsTools,
-  isPullRequestsRequest,
-  handlePullRequestsRequest,
-} from './features/pull-requests';
-
-import {
-  pipelinesTools,
-  isPipelinesRequest,
-  handlePipelinesRequest,
-} from './features/pipelines';
-
-import {
-  wikisTools,
-  isWikisRequest,
-  handleWikisRequest,
-} from './features/wikis';
+import { AuthenticationMethod } from './shared/auth';
+import { getConnection } from './connection';
+import { executeToolCall } from './tool-executor';
+import { getAllTools } from './tools-registry';
 
 // Create a safe console logging function that won't interfere with MCP protocol
 function safeLog(message: string) {
@@ -109,22 +53,9 @@ export function createAzureDevOpsServer(config: AzureDevOpsConfig): Server {
   );
 
   // Register the ListTools request handler
-  server.setRequestHandler(ListToolsRequestSchema, () => {
-    // Combine tools from all features
-    const tools = [
-      ...usersTools,
-      ...organizationsTools,
-      ...projectsTools,
-      ...repositoriesTools,
-      ...workItemsTools,
-      ...searchTools,
-      ...pullRequestsTools,
-      ...pipelinesTools,
-      ...wikisTools,
-    ];
-
-    return { tools };
-  });
+  server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: getAllTools(),
+  }));
 
   // Register the resource handlers
   // ListResources - register available resource templates
@@ -284,60 +215,13 @@ export function createAzureDevOpsServer(config: AzureDevOpsConfig): Server {
   });
 
   // Register the CallTool request handler
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    try {
-      // Note: We don't need to validate the presence of arguments here because:
-      // 1. The schema validations (via zod.parse) will check for required parameters
-      // 2. Default values from environment.ts are applied for optional parameters (projectId, organizationId)
-      // 3. Arguments can be omitted entirely for tools with no required parameters
-
-      // Get a connection to Azure DevOps
-      const connection = await getConnection(config);
-
-      // Route the request to the appropriate feature handler
-      if (isWorkItemsRequest(request)) {
-        return await handleWorkItemsRequest(connection, request);
-      }
-
-      if (isProjectsRequest(request)) {
-        return await handleProjectsRequest(connection, request);
-      }
-
-      if (isRepositoriesRequest(request)) {
-        return await handleRepositoriesRequest(connection, request);
-      }
-
-      if (isOrganizationsRequest(request)) {
-        // Organizations feature doesn't need the config object anymore
-        return await handleOrganizationsRequest(connection, request);
-      }
-
-      if (isSearchRequest(request)) {
-        return await handleSearchRequest(connection, request);
-      }
-
-      if (isUsersRequest(request)) {
-        return await handleUsersRequest(connection, request);
-      }
-
-      if (isPullRequestsRequest(request)) {
-        return await handlePullRequestsRequest(connection, request);
-      }
-
-      if (isPipelinesRequest(request)) {
-        return await handlePipelinesRequest(connection, request);
-      }
-
-      if (isWikisRequest(request)) {
-        return await handleWikisRequest(connection, request);
-      }
-
-      // If we get here, the tool is not recognized by any feature handler
-      throw new Error(`Unknown tool: ${request.params.name}`);
-    } catch (error) {
-      return handleResponseError(error);
-    }
-  });
+  server.setRequestHandler(CallToolRequestSchema, async (request) =>
+    executeToolCall(
+      config,
+      request.params.name,
+      request.params.arguments ?? {},
+    ),
+  );
 
   return server;
 }
@@ -456,31 +340,4 @@ function validateConfig(config: AzureDevOpsConfig): void {
   }
 }
 
-/**
- * Create a connection to Azure DevOps
- *
- * @param config The configuration to use
- * @returns A WebApi connection
- */
-export async function getConnection(
-  config: AzureDevOpsConfig,
-): Promise<WebApi> {
-  try {
-    // Create a client with the appropriate authentication method
-    const client = new AzureDevOpsClient({
-      method: config.authMethod || AuthenticationMethod.AzureIdentity,
-      organizationUrl: config.organizationUrl,
-      personalAccessToken: config.personalAccessToken,
-    });
-
-    // Test the connection by getting the Core API
-    await client.getCoreApi();
-
-    // Return the underlying WebApi client
-    return await client.getWebApiClient();
-  } catch (error) {
-    throw new AzureDevOpsAuthenticationError(
-      `Failed to connect to Azure DevOps: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
+export { getConnection } from './connection';

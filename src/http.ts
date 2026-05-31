@@ -12,10 +12,14 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createAzureDevOpsServer } from './server';
 import { getConfig } from './config';
 import { createMcpRequestLogger, logMcpEvent } from './http-request-log';
+import { buildOpenApiDocument } from './openapi';
+import { executeToolCall } from './tool-executor';
+import { getToolByName } from './tools-registry';
 
 const PORT = Number.parseInt(process.env.MCP_HTTP_PORT || '3000', 10);
 const HOST = process.env.MCP_HTTP_HOST || '0.0.0.0';
 const MCP_PATH = process.env.MCP_HTTP_PATH || '/mcp';
+const OPENAPI_PATH = `${MCP_PATH}/openapi.json`;
 
 function isStatelessMode(): boolean {
   const value = (process.env.MCP_HTTP_STATELESS ?? 'true').toLowerCase();
@@ -218,6 +222,39 @@ async function handleMcpDelete(req: Request, res: Response): Promise<void> {
   }
 }
 
+async function handleOpenApiToolCall(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const rawToolName = req.params.toolName;
+  const toolName =
+    typeof rawToolName === 'string' ? rawToolName : rawToolName?.[0];
+
+  if (!toolName || !getToolByName(toolName)) {
+    res.status(404).json({ error: `Unknown tool: ${toolName ?? 'undefined'}` });
+    return;
+  }
+
+  try {
+    const result = await executeToolCall(
+      getConfig(),
+      toolName,
+      (req.body ?? {}) as Record<string, unknown>,
+    );
+    res.json(result);
+  } catch (error) {
+    logMcpEvent('error', 'OpenAPI tool call failed', {
+      toolName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function shutdown(): Promise<void> {
   for (const sessionId of Object.keys(transports)) {
     try {
@@ -244,6 +281,12 @@ async function main(): Promise<void> {
 
   const mcpRequestLogger = createMcpRequestLogger(getSessionId);
   app.use(MCP_PATH, mcpRequestLogger);
+
+  app.get(OPENAPI_PATH, (_req, res) => {
+    res.json(buildOpenApiDocument());
+  });
+  app.post(`${MCP_PATH}/:toolName`, handleOpenApiToolCall);
+
   app.post(MCP_PATH, handleMcpPost);
   app.get(MCP_PATH, handleMcpGet);
   app.delete(MCP_PATH, handleMcpDelete);
@@ -253,6 +296,7 @@ async function main(): Promise<void> {
       host: HOST,
       port: PORT,
       path: MCP_PATH,
+      openapiPath: OPENAPI_PATH,
       mode: STATELESS ? 'stateless' : 'stateful',
       logLevel: process.env.LOG_LEVEL || 'info',
     });
